@@ -1,0 +1,19 @@
+# Pinnacle's copyrighted firmware and installer: extract locally, see README
+dazzle/go7007fw.bin
+*.exe
+
+# build output
+dazzle/libdazzle.dylib
+__pycache__/
+*.pyc
+
+# captures and previews
+*.mpg
+*.mkv
+*.mp4
+*.wav
+*.m4v
+*.mjpeg
+
+# macOS
+.DS_Store
