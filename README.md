@@ -38,9 +38,19 @@ QuickTime can't play MKV or MPEG-2; use IINA/VLC, or convert:
 
 The first line printed says whether the decoder has locked onto a video signal. If it says `NO SIGNAL`, check that the VCR is playing and the SCART adapter is set to OUT.
 
-A live preview window (ffplay) opens while recording, so you can see when the tape ends; close it any time, the recording continues. `--no-preview` turns it off.
+A live preview window (ffplay, picture only, no sound) opens while recording, so you can see when the tape ends; close it any time, the recording continues. `--no-preview` turns it off.
 
 Options: `--input composite|svideo`, `--insel 0xNN` (raw ADV7180 input/standard byte), `--format mpeg2|mpeg1|mpeg4|mjpeg`, `--gop`, `--no-audio`.
+
+## Watch without recording
+
+```sh
+python3 -m dazzle.view                # live picture and sound
+python3 -m dazzle.view --no-audio     # picture only
+```
+
+Handy for finding the right spot on a tape before recording. Stop with Ctrl-C or by closing the window. It takes the same input/standard options as `capture`.
+The viewer and the recorder can't run at the same time: only one program can use the Dazzle at once.
 
 ## Status
 
@@ -61,7 +71,8 @@ Options: `--input composite|svideo`, `--insel 0xNN` (raw ADV7180 input/standard 
 | `native/go7007-fw.c` | Linux encoder-config generator, unmodified (GPL-2.0), built against a small kernel shim (`native/include/`, `native/go7007-priv.h`) |
 | `native/dazzle_native.c` | C entry point for the firmware builder, plus the video pipe parser (strips GO7007 timestamp/VBI chunks) |
 | `dazzle/native.py` | ctypes bindings |
-| `dazzle/capture.py` | capture CLI: decoder, codec and encoder setup, USB reader threads, muxing |
+| `dazzle/capture.py` | capture CLI, plus the shared device setup (decoder, codec, encoder), USB reader threads, ffplay helper, muxing |
+| `dazzle/view.py` | live viewer: same setup, plays to ffplay instead of recording |
 | `tools/isx.py` | unpacker for the InstallShield installer the Windows driver came in |
 
 Startup sequence:

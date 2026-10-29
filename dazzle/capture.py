@@ -55,32 +55,42 @@ def reader(go, ep, size, q, stop):
     q.put(None)
 
 
-class Preview:
-    """Live ffplay window fed from the encoded video stream. Never blocks or breaks the recording."""
+class FFplay:
+    """Feeds a live stream to ffplay from a background thread. Never blocks or breaks the caller."""
 
-    def __init__(self, fmt, pal):
-        demux = {'mjpeg': 'mjpeg', 'mpeg4': 'm4v'}.get(fmt, 'mpegvideo')
+    def __init__(self, input_args, title='Dazzle preview', video=True):
+        opts = ['-vf', 'yadif', '-framedrop', '-window_title', title] if video else ['-nodisp']
         self.proc = subprocess.Popen(
-            ['ffplay', '-hide_banner', '-loglevel', 'quiet', '-window_title', 'Dazzle preview',
-             '-fflags', 'nobuffer', '-flags', 'low_delay', '-framedrop', '-vf', 'yadif',
-             '-probesize', '65536', '-analyzeduration', '0',
-             '-f', demux, '-framerate', '25' if pal else '30000/1001', '-i', '-'],
+            ['ffplay', '-hide_banner', '-loglevel', 'quiet', '-fflags', 'nobuffer', '-flags', 'low_delay',
+             '-probesize', '65536', '-analyzeduration', '0', *opts, *input_args, '-i', '-'],
             stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         self.q = queue.Queue(maxsize=256)
         threading.Thread(target=self._pump, daemon=True).start()
+
+    @classmethod
+    def video(cls, fmt, pal, title='Dazzle preview'):
+        demux = {'mjpeg': 'mjpeg', 'mpeg4': 'm4v'}.get(fmt, 'mpegvideo')
+        return cls(['-f', demux, '-framerate', '25' if pal else '30000/1001'], title)
+
+    @classmethod
+    def audio(cls):
+        return cls(['-f', 's16le', '-ar', '48000', '-ch_layout', 'stereo'], video=False)
 
     def _pump(self):
         while (data := self.q.get()) is not None:
             try:
                 self.proc.stdin.write(data)
-            except (BrokenPipeError, OSError):  # window closed: keep recording without preview
+            except (BrokenPipeError, OSError):  # window closed: carry on without it
                 return
 
     def feed(self, data):
         try:
             self.q.put_nowait(data)
-        except queue.Full:  # preview fell behind: drop data rather than stall the capture
+        except queue.Full:  # player fell behind: drop data rather than stall the capture
             pass
+
+    def alive(self):
+        return self.proc.poll() is None
 
     def close(self):
         self.q.put(None)
@@ -91,22 +101,30 @@ class Preview:
         self.proc.terminate()
 
 
-def main():
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument('output', help='output file (.mpg/.m4v/.mjpeg); audio goes to <output>.wav, muxed to .mkv if ffmpeg is present')
+def add_device_args(ap):
     ap.add_argument('--format', choices=FORMATS, default='mpeg2')
     ap.add_argument('--bitrate', type=int, default=8_000_000, help='bits/s for MPEG formats (default 8 Mbit/s)')
     ap.add_argument('--gop', type=int, default=15)
     ap.add_argument('--input', choices=INPUTS, default='composite')
     ap.add_argument('--insel', type=lambda v: int(v, 0), help='raw ADV7180 input select value (overrides --input)')
     ap.add_argument('--ntsc', action='store_true', help='NTSC instead of PAL')
-    ap.add_argument('--duration', type=float, help='seconds to record (default: until Ctrl-C)')
     ap.add_argument('--no-audio', action='store_true')
-    ap.add_argument('--no-preview', dest='preview', action='store_false', help="don't open a live ffplay preview window")
     ap.add_argument('--no-audio-master', dest='audio_master', action='store_false',
                     help="don't let the GO7007 drive the I2S clock (on this board audio only flows when it does)")
-    args = ap.parse_args()
 
+
+def start_readers(go, args, stop):
+    vq, aq = queue.Queue(), queue.Queue()
+    threads = [threading.Thread(target=reader, args=(go, EP_VIDEO, 4096, vq, stop), daemon=True)]
+    if not args.no_audio:
+        threads.append(threading.Thread(target=reader, args=(go, EP_AUDIO, 4096, aq, stop), daemon=True))
+    for t in threads:
+        t.start()
+    return vq, aq, threads
+
+
+def start_device(args):
+    """Boot the encoder, set up the decoder and codec, and start streaming."""
     pal = not args.ntsc
     go = Go7007()
     go.boot_encoder()
@@ -134,18 +152,25 @@ def main():
         audio_rate=48000, audio_bclk_div=4, audio_main_div=1, hpi_buffer_cap=7)  # gives 48 kHz stereo on this board
     go.send_firmware(image)
     go.read_interrupt()
+    return go
 
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument('output', help='output file (.mpg/.m4v/.mjpeg); audio goes to <output>.wav, muxed to .mkv if ffmpeg is present')
+    add_device_args(ap)
+    ap.add_argument('--duration', type=float, help='seconds to record (default: until Ctrl-C)')
+    ap.add_argument('--no-preview', dest='preview', action='store_false', help="don't open a live ffplay preview window")
+    args = ap.parse_args()
+
+    pal = not args.ntsc
+    go = start_device(args)
     stop = threading.Event()
     signal.signal(signal.SIGINT, lambda *_: stop.set())
-    vq, aq = queue.Queue(), queue.Queue()
-    threads = [threading.Thread(target=reader, args=(go, EP_VIDEO, 4096, vq, stop), daemon=True)]
-    if not args.no_audio:
-        threads.append(threading.Thread(target=reader, args=(go, EP_AUDIO, 4096, aq, stop), daemon=True))
-    for t in threads:
-        t.start()
+    vq, aq, threads = start_readers(go, args, stop)
 
     parser = native.Parser()
-    preview = Preview(args.format, pal) if args.preview and shutil.which('ffplay') else None
+    preview = FFplay.video(args.format, pal) if args.preview and shutil.which('ffplay') else None
     wav_path = args.output + '.wav'
     vbytes = abytes = 0
     t0 = time.time()
