@@ -38,6 +38,8 @@ QuickTime can't play MKV or MPEG-2; use IINA/VLC, or convert:
 
 The first line printed says whether the decoder has locked onto a video signal. If it says `NO SIGNAL`, check that the VCR is playing and the SCART adapter is set to OUT.
 
+A live preview window (ffplay) opens while recording, so you can see when the tape ends; close it any time, the recording continues. `--no-preview` turns it off.
+
 Options: `--input composite|svideo`, `--insel 0xNN` (raw ADV7180 input/standard byte), `--format mpeg2|mpeg1|mpeg4|mjpeg`, `--gop`, `--no-audio`.
 
 ## Status

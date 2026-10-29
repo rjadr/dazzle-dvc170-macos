@@ -55,6 +55,42 @@ def reader(go, ep, size, q, stop):
     q.put(None)
 
 
+class Preview:
+    """Live ffplay window fed from the encoded video stream. Never blocks or breaks the recording."""
+
+    def __init__(self, fmt, pal):
+        demux = {'mjpeg': 'mjpeg', 'mpeg4': 'm4v'}.get(fmt, 'mpegvideo')
+        self.proc = subprocess.Popen(
+            ['ffplay', '-hide_banner', '-loglevel', 'quiet', '-window_title', 'Dazzle preview',
+             '-fflags', 'nobuffer', '-flags', 'low_delay', '-framedrop', '-vf', 'yadif',
+             '-probesize', '65536', '-analyzeduration', '0',
+             '-f', demux, '-framerate', '25' if pal else '30000/1001', '-i', '-'],
+            stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self.q = queue.Queue(maxsize=256)
+        threading.Thread(target=self._pump, daemon=True).start()
+
+    def _pump(self):
+        while (data := self.q.get()) is not None:
+            try:
+                self.proc.stdin.write(data)
+            except (BrokenPipeError, OSError):  # window closed: keep recording without preview
+                return
+
+    def feed(self, data):
+        try:
+            self.q.put_nowait(data)
+        except queue.Full:  # preview fell behind: drop data rather than stall the capture
+            pass
+
+    def close(self):
+        self.q.put(None)
+        try:
+            self.proc.stdin.close()
+        except OSError:
+            pass
+        self.proc.terminate()
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('output', help='output file (.mpg/.m4v/.mjpeg); audio goes to <output>.wav, muxed to .mkv if ffmpeg is present')
@@ -66,6 +102,7 @@ def main():
     ap.add_argument('--ntsc', action='store_true', help='NTSC instead of PAL')
     ap.add_argument('--duration', type=float, help='seconds to record (default: until Ctrl-C)')
     ap.add_argument('--no-audio', action='store_true')
+    ap.add_argument('--no-preview', dest='preview', action='store_false', help="don't open a live ffplay preview window")
     ap.add_argument('--no-audio-master', dest='audio_master', action='store_false',
                     help="don't let the GO7007 drive the I2S clock (on this board audio only flows when it does)")
     args = ap.parse_args()
@@ -108,6 +145,7 @@ def main():
         t.start()
 
     parser = native.Parser()
+    preview = Preview(args.format, pal) if args.preview and shutil.which('ffplay') else None
     wav_path = args.output + '.wav'
     vbytes = abytes = 0
     t0 = time.time()
@@ -129,6 +167,8 @@ def main():
                     data = parser.feed(chunk)
                     vf.write(data)
                     vbytes += len(data)
+                    if preview:
+                        preview.feed(data)
             except queue.Empty:
                 pass
             while wf and not aq.empty():
@@ -151,6 +191,8 @@ def main():
         if wf:
             wf.close()
     print()
+    if preview:
+        preview.close()
     go.write_interrupt(0x0001, 0x0001)  # reset encoder so it stops streaming
     go.close()
 
